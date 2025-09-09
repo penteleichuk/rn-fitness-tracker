@@ -2,7 +2,9 @@ package com.fitnesstracker.googlefit
 
 import android.app.Activity
 import android.content.Intent
-import com.facebook.react.bridge.*
+import com.facebook.react.bridge.ActivityEventListener
+import com.facebook.react.bridge.Promise
+import com.facebook.react.bridge.ReactApplicationContext
 import com.fitnesstracker.permission.Permission
 import com.fitnesstracker.permission.PermissionKind
 import com.google.android.gms.auth.api.signin.GoogleSignIn
@@ -11,75 +13,63 @@ import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.fitness.data.DataType
 import com.google.android.gms.tasks.Task
 
-
 class GoogleFitManager(private val reactContext: ReactApplicationContext) : ActivityEventListener {
     private var authorized = false
     private var authorisationPromise: Promise? = null
 
-    private var activityHistory: ActivityHistory
-    private var historyClient: HistoryClient
-    private val recordingApi: RecordingApi
+    private val activityHistory: ActivityHistory = ActivityHistory(reactContext)
+    private val historyClient: HistoryClient = HistoryClient(reactContext)
+    private val recordingApi: RecordingApi = RecordingApi(reactContext)
 
     private var shouldSubscribeToSteps = false
 
     init {
         reactContext.addActivityEventListener(this)
-
-        activityHistory = ActivityHistory(reactContext)
-        historyClient = HistoryClient(reactContext)
-        recordingApi = RecordingApi(reactContext)
     }
 
-    override fun onNewIntent(intent: Intent?) {}
+    override fun onNewIntent(intent: Intent) { /* no-op */ }
+
     override fun onActivityResult(
-        activity: Activity?,
+        activity: Activity,
         requestCode: Int,
         resultCode: Int,
         data: Intent?
     ) {
-        if (requestCode == GOOGLE_FIT_PERMISSIONS_REQUEST_CODE) {
-            try {
-                /* Checks if correctly setup Google cloud console credentials */
-                val task: Task<GoogleSignInAccount> =
-                    GoogleSignIn.getSignedInAccountFromIntent(data)
-                task.getResult(ApiException::class.java)
+        if (requestCode != GOOGLE_FIT_PERMISSIONS_REQUEST_CODE) return
 
-                if (resultCode == Activity.RESULT_OK) {
-                    handleSuccessfulLogin()
-                    return
-                }
+        try {
+            val task: Task<GoogleSignInAccount> =
+                GoogleSignIn.getSignedInAccountFromIntent(data)
+            task.getResult(ApiException::class.java)
 
-                authorisationPromise?.resolve(false)
-            } catch (e: ApiException) {
-                val code = e.statusCode
-
-                if (code == SIGN_IN_CANCELLED_CODE) {
-                    authorisationPromise?.resolve(false)
-                    return
-                }
-
-                if (code == SIGN_IN_FAILED_CODE) {
-                    authorisationPromise?.reject(
-                        E_SIGN_IN_FAILED,
-                        SIGN_IN_FAILED_ERROR_MESSAGE
-                    )
-                    return
-                }
-
-                if (code == DEVELOPER_ERROR_CODE) {
-                    authorisationPromise?.reject(
-                        E_DEVELOPER_ERROR,
-                        DEVELOPER_ERROR_MESSAGE
-                    )
-                    return
-                }
-
-                val errorCodeMessage = "ErrorCode: $code; "
-                authorisationPromise?.reject(
-                    E_UNKNOWN_ERROR,
-                    errorCodeMessage + E_UNKNOWN_ERROR_MESSAGE
-                )
+            if (resultCode == Activity.RESULT_OK) {
+                handleSuccessfulLogin()
+                return
             }
+
+            authorisationPromise?.resolve(false)
+        } catch (e: ApiException) {
+            val code = e.statusCode
+            when (code) {
+                SIGN_IN_CANCELLED_CODE -> {
+                    authorisationPromise?.resolve(false)
+                }
+                SIGN_IN_FAILED_CODE -> {
+                    authorisationPromise?.reject(E_SIGN_IN_FAILED, SIGN_IN_FAILED_ERROR_MESSAGE)
+                }
+                DEVELOPER_ERROR_CODE -> {
+                    authorisationPromise?.reject(E_DEVELOPER_ERROR, DEVELOPER_ERROR_MESSAGE)
+                }
+                else -> {
+                    val errorCodeMessage = "ErrorCode: $code; "
+                    authorisationPromise?.reject(
+                        E_UNKNOWN_ERROR,
+                        errorCodeMessage + E_UNKNOWN_ERROR_MESSAGE
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            authorisationPromise?.reject(t)
         }
     }
 
@@ -92,58 +82,47 @@ class GoogleFitManager(private val reactContext: ReactApplicationContext) : Acti
 
             if (GoogleSignIn.hasPermissions(googleAccount, fitnessOptions)) {
                 authorized = true
-            } else {
-                if (permissions.find { it.permissionKind == PermissionKind.STEPS } !== null) {
-                    shouldSubscribeToSteps = true
-                }
-
-                GoogleSignIn.requestPermissions(
-                    activity,
-                    GOOGLE_FIT_PERMISSIONS_REQUEST_CODE,
-                    googleAccount,
-                    fitnessOptions
-                )
+                authorisationPromise?.resolve(true)
+                return
             }
+
+            if (permissions.any { it.permissionKind == PermissionKind.STEPS }) {
+                shouldSubscribeToSteps = true
+            }
+
+            GoogleSignIn.requestPermissions(
+                activity,
+                GOOGLE_FIT_PERMISSIONS_REQUEST_CODE,
+                googleAccount,
+                fitnessOptions
+            )
         } catch (e: Exception) {
             promiseException(authorisationPromise, e)
         }
     }
 
-    fun isAuthorized(): Boolean {
-        return authorized
-    }
+    fun isAuthorized(): Boolean = authorized
 
-    fun isTrackingAvailable(
-        permissions: ArrayList<Permission>
-    ): Boolean {
+    fun isTrackingAvailable(permissions: ArrayList<Permission>): Boolean {
         val fitnessOptions = Helpers.buildFitnessOptionsFromPermissions(permissions)
         val googleAccount = Helpers.getGoogleAccount(reactContext, fitnessOptions)
-
-        return GoogleSignIn.hasPermissions(
-            googleAccount,
-            fitnessOptions
-        )
+        return GoogleSignIn.hasPermissions(googleAccount, fitnessOptions)
     }
 
-    fun getHistoryClient(): HistoryClient {
-        return historyClient
-    }
+    fun getHistoryClient(): HistoryClient = historyClient
 
-    fun getActivityHistory(): ActivityHistory {
-        return activityHistory
-    }
+    fun getActivityHistory(): ActivityHistory = activityHistory
 
     private fun handleSuccessfulLogin() {
         authorized = true
-
-        /* Subscribes to tracking steps even if google fit is not installed */
-        if (shouldSubscribeToSteps) recordingApi.subscribe(DataType.TYPE_STEP_COUNT_DELTA)
-
+        if (shouldSubscribeToSteps) {
+            recordingApi.subscribe(DataType.TYPE_STEP_COUNT_DELTA)
+        }
         authorisationPromise?.resolve(true)
     }
 
     private fun promiseException(promise: Promise?, e: Exception) {
-        promise!!.reject(e)
+        promise?.reject(e)
         e.printStackTrace()
     }
 

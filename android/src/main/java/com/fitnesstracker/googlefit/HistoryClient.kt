@@ -18,8 +18,8 @@ import java.util.Calendar
 import java.util.Date
 import kotlin.math.roundToInt
 
-
 class HistoryClient(private val reactContext: ReactApplicationContext) {
+
     fun queryTotal(
         promise: Promise,
         startTime: Long,
@@ -34,14 +34,10 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                     7,
                     permission,
                     object : OnFloatFetch {
-                        override fun onSuccess(data: Float) {
-                            promise.resolve(data)
-                        }
-
-                        override fun onFailure(e: Exception?) {
-                            promise.reject(e)
-                        }
-                    })
+                        override fun onSuccess(data: Float) = promise.resolve(data)
+                        override fun onFailure(e: Throwable) = promise.reject(e)
+                    }
+                )
             } else {
                 getIntDataHistory(
                     startTime,
@@ -49,16 +45,12 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                     7,
                     permission,
                     object : OnIntFetch {
-                        override fun onSuccess(data: Int) {
-                            promise.resolve(data)
-                        }
-
-                        override fun onFailure(e: Exception?) {
-                            promise.reject(e)
-                        }
-                    })
+                        override fun onSuccess(data: Int) = promise.resolve(data)
+                        override fun onFailure(e: Throwable) = promise.reject(e)
+                    }
+                )
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             promise.reject(e)
             e.printStackTrace()
         }
@@ -74,8 +66,8 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         try {
             var end = DateHelper.getEndOfDay(endDate)
             if (DateHelper.isToday(endDate)) {
-                end =
-                    Calendar.getInstance().time // make sure current day query time is until current time, not end of the day
+                // для текущего дня ограничиваем концом текущего времени
+                end = Calendar.getInstance().time
             }
             val start = DateHelper.getStartOfDay(endDate)
 
@@ -102,10 +94,9 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                             }
                         }
 
-                        override fun onFailure(e: Exception?) {
-                            promise.reject(e)
-                        }
-                    })
+                        override fun onFailure(e: Throwable) = promise.reject(e)
+                    }
+                )
             } else {
                 getIntDataHistory(
                     start.time,
@@ -129,12 +120,11 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                             }
                         }
 
-                        override fun onFailure(e: Exception?) {
-                            promise.reject(e)
-                        }
-                    })
+                        override fun onFailure(e: Throwable) = promise.reject(e)
+                    }
+                )
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             promise.reject(e)
             e.printStackTrace()
         }
@@ -144,7 +134,6 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         try {
             val endTime = Date().time
             val startTime: Long = 1
-
             val dataType = permission.dataTypes.first()
 
             if (dataType != DataType.TYPE_WEIGHT && dataType != DataType.TYPE_HEIGHT) {
@@ -157,17 +146,15 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                 .setLimit(1)
                 .build()
 
-            val onFailure = { e: Exception -> promise.reject(e) }
-            val onSuccess = { task: Task<DataReadResponse> ->
+            val onFailure = OnFailureListener { e: Exception -> promise.reject(e) }
+            val onSuccess = OnCompleteListener<DataReadResponse> { task ->
                 if (task.isSuccessful) {
                     var data: Float? = null
                     val response = task.result
-
                     val dataSets: List<DataSet> = response.dataSets
 
                     for (dataSet in dataSets) {
                         val dataPoints: List<DataPoint> = dataSet.dataPoints
-
                         for (dataPoint in dataPoints) {
                             for (field in dataPoint.dataType.fields) {
                                 data = dataPoint.getValue(field).asFloat()
@@ -176,6 +163,7 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                     }
 
                     if (data != null) {
+                        // округление до сотых
                         promise.resolve((data * 100.0).roundToInt() / 100.0)
                     } else {
                         promise.resolve(data)
@@ -184,8 +172,7 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
             }
 
             getHistoryClient(readRequest, permission, onFailure, onSuccess)
-
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             promise.reject(e)
             e.printStackTrace()
         }
@@ -198,12 +185,9 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         dataTypes: ArrayList<DataType>
     ): DataReadRequest {
         val readRequestBuilder = DataReadRequest.Builder()
-
-        for (i in dataTypes) readRequestBuilder.aggregate(i)
-
+        for (dt in dataTypes) readRequestBuilder.aggregate(dt)
         readRequestBuilder.bucketByTime(dayCount, TimeUnit.DAYS)
         readRequestBuilder.setTimeRange(startTime, endTime, TimeUnit.MILLISECONDS)
-
         return readRequestBuilder.build()
     }
 
@@ -214,19 +198,18 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         onSuccess: OnCompleteListener<DataReadResponse>
     ) {
         val fitnessOptionsBuilder: FitnessOptions.Builder = FitnessOptions.builder()
-
         for (dataType in permission.dataTypes) {
-            fitnessOptionsBuilder.addDataType(
-                dataType,
-                permission.permissionAccess
-            )
+            fitnessOptionsBuilder.addDataType(dataType, permission.permissionAccess)
         }
 
         val fitnessOptions = fitnessOptionsBuilder.build()
         val googleAccount = Helpers.getGoogleAccount(reactContext, fitnessOptions)
 
         if (!GoogleSignIn.hasPermissions(googleAccount, fitnessOptions)) {
-            throw IllegalAccessException("Unauthorized GoogleFit. User must have permissions for data type: " + permission.dataTypes.joinToString { it.name })
+            throw IllegalAccessException(
+                "Unauthorized GoogleFit. User must have permissions for data type: " +
+                    permission.dataTypes.joinToString { it.name }
+            )
         }
 
         Fitness.getHistoryClient(reactContext, googleAccount)
@@ -242,30 +225,25 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         permission: Permission,
         fetchCompleteCallback: OnIntFetch
     ) {
-        val readRequest: DataReadRequest =
-            createReadRequest(startTime, endTime, dayCount, permission.dataTypes)
-        val onFailure = { e: Exception -> fetchCompleteCallback.onFailure(e) }
-        val onSuccess = { task: Task<DataReadResponse> ->
+        val readRequest = createReadRequest(startTime, endTime, dayCount, permission.dataTypes)
+        val onFailure = OnFailureListener { e: Exception -> fetchCompleteCallback.onFailure(e) }
+        val onSuccess = OnCompleteListener<DataReadResponse> { task ->
             if (task.isSuccessful) {
                 val response = task.result
                 val data = parseIntDataDelta(response, permission.dataTypes)
                 fetchCompleteCallback.onSuccess(data)
             }
         }
-
         getHistoryClient(readRequest, permission, onFailure, onSuccess)
     }
 
     private fun parseIntDataDelta(response: DataReadResponse, type: ArrayList<DataType>): Int {
         val buckets: List<Bucket> = response.buckets
         var count = 0
-
         for (bucket in buckets) {
             val dataSets: List<DataSet> = bucket.dataSets
-
             for (dataSet in dataSets) {
                 val dataPoints: List<DataPoint> = dataSet.dataPoints
-
                 for (dataPoint in dataPoints) {
                     if (type.contains(dataPoint.dataType)) {
                         for (field in dataPoint.dataType.fields) {
@@ -275,7 +253,6 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                 }
             }
         }
-
         return count
     }
 
@@ -286,30 +263,25 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
         permission: Permission,
         fetchCompleteCallback: OnFloatFetch
     ) {
-        val readRequest: DataReadRequest =
-            createReadRequest(startTime, endTime, dayCount, permission.dataTypes)
-        val onFailure = { e: Exception -> fetchCompleteCallback.onFailure(e) }
-        val onSuccess = { task: Task<DataReadResponse> ->
+        val readRequest = createReadRequest(startTime, endTime, dayCount, permission.dataTypes)
+        val onFailure = OnFailureListener { e: Exception -> fetchCompleteCallback.onFailure(e) }
+        val onSuccess = OnCompleteListener<DataReadResponse> { task ->
             if (task.isSuccessful) {
                 val response = task.result
                 val data = parseFloatDataDelta(response, permission.dataTypes)
                 fetchCompleteCallback.onSuccess(data)
             }
         }
-
         getHistoryClient(readRequest, permission, onFailure, onSuccess)
     }
 
     private fun parseFloatDataDelta(response: DataReadResponse, type: ArrayList<DataType>): Float {
         val buckets: List<Bucket> = response.buckets
         var count = 0f
-
         for (bucket in buckets) {
             val dataSets: List<DataSet> = bucket.dataSets
-
             for (dataSet in dataSets) {
                 val dataPoints: List<DataPoint> = dataSet.dataPoints
-
                 for (dataPoint in dataPoints) {
                     if (type.contains(dataPoint.dataType)) {
                         for (field in dataPoint.dataType.fields) {
@@ -319,17 +291,16 @@ class HistoryClient(private val reactContext: ReactApplicationContext) {
                 }
             }
         }
-
         return count
     }
 }
 
 interface OnFloatFetch {
     fun onSuccess(data: Float)
-    fun onFailure(e: Exception?)
+    fun onFailure(e: Throwable)
 }
 
 interface OnIntFetch {
     fun onSuccess(data: Int)
-    fun onFailure(e: Exception?)
+    fun onFailure(e: Throwable)
 }
